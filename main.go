@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -39,16 +38,34 @@ func handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	// Validate JSON
-	var payload interface{}
+	// Decode the webhook envelope while preserving all individual alert fields.
+	var payload struct {
+		Alerts []map[string]json.RawMessage `json:"alerts"`
+	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
+	if payload.Alerts == nil {
+		http.Error(w, "missing alerts array", http.StatusBadRequest)
+		return
+	}
+	for _, alert := range payload.Alerts {
+		if alert == nil {
+			http.Error(w, "invalid alert object", http.StatusBadRequest)
+			return
+		}
+	}
 
-	// Pretty-print to stdout
-	out, _ := json.MarshalIndent(payload, "", "  ")
-	fmt.Fprintf(os.Stdout, "%s\n", out)
+	// Emit one compact JSON line per alert, using its individual status.
+	encoder := json.NewEncoder(os.Stdout)
+	for _, alert := range payload.Alerts {
+		if err := encoder.Encode(alert); err != nil {
+			log.Printf("failed to write alert: %v", err)
+			http.Error(w, "failed to write alert", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	w.WriteHeader(http.StatusOK)
 }
