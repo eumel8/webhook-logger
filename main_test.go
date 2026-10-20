@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func captureWebhook(t *testing.T, body string) (int, string) {
+func captureWebhook(t *testing.T, body string, authorization ...string) (int, string) {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -25,7 +25,11 @@ func captureWebhook(t *testing.T, body string) (int, string) {
 		w.Close()
 	})
 	response := httptest.NewRecorder()
-	handleWebhook(response, httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body)))
+	request := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+	if len(authorization) > 0 {
+		request.Header.Set("Authorization", authorization[0])
+	}
+	handleWebhook(response, request)
 	os.Stdout = stdout
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -35,6 +39,24 @@ func captureWebhook(t *testing.T, body string) (int, string) {
 		t.Fatal(err)
 	}
 	return response.Code, string(output)
+}
+
+func TestWebhookBearerAuthentication(t *testing.T) {
+	previousToken := bearerToken
+	bearerToken = "test-webhook-token"
+	t.Cleanup(func() { bearerToken = previousToken })
+	for _, header := range []string{"", "Bearer wrong-token", "Basic test-webhook-token", "Bearer test-webhook-token-extra"} {
+		t.Run(header, func(t *testing.T) {
+			code, output := captureWebhook(t, `{"alerts":[{"status":"firing"}]}`, header)
+			if code != http.StatusUnauthorized || output != "" {
+				t.Fatalf("status = %d, output = %q; want 401 and no output", code, output)
+			}
+		})
+	}
+	code, output := captureWebhook(t, `{"alerts":[{"status":"firing"}]}`, "Bearer test-webhook-token")
+	if code != http.StatusOK || output != "{\"status\":\"firing\"}\n" {
+		t.Fatalf("status = %d, output = %q; want 200 and alert JSON", code, output)
+	}
 }
 
 func TestWebhookIndividualAlerts(t *testing.T) {
